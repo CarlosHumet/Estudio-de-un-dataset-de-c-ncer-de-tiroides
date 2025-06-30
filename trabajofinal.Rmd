@@ -1,0 +1,1602 @@
+---
+output:
+  pdf_document: 
+    toc: true
+    latex_engine: xelatex
+    number_sections: true
+  header-includes:
+  - \renewcommand{\contentsname}{Índice}
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen=999)
+set.seed(1234)
+libraries<- c("tidyverse", "dplyr", "ggplot2", "patchwork", "skimr", "sqldf", "corrplot", "rstatix", "ggcorrplot", "reticulate", "Hmisc", "tibble", "knitr", "cowplot", "GGally", "car", "rlang")
+
+installifnot <- function (pckgName){
+  if(!require(pckgName, character.only=TRUE)){
+      install.packages(pckgName, dep=TRUE)
+  }
+}
+
+for(i in libraries){
+  installifnot(i)
+  library(i, character.only = TRUE, quietly = TRUE)
+}
+
+#install_miniconda()
+# "~/Library/r-miniconda-arm64"
+
+conda_create("r-reticulate-conda", packages = "python=3.10")  # más compatible que 3.12
+use_condaenv("r-reticulate-conda", required = TRUE)
+
+py_install(
+  packages = c("numpy", "pandas", "matplotlib", "seaborn", "scikit-learn",
+               "xgboost", "tensorflow", "keras", "scikeras", "tqdm"),
+  pip = TRUE
+)
+```
+
+# **Introducción**
+
+El cáncer de tiroides (CT) es uno de los tumores malignos más prevalentes del sistema endocrino, representando aproximadamente entre el 1% y el 3% de todos los nuevos tumores malignos a nivel mundial (1). La edad mediana del diagnóstico es de 51 años, siendo poco frecuente en jóvenes menores de 20 años. Además, la mortalidad aumenta con la edad, situando la mediana de la edad al morir de 74 años (2)
+
+Se han descrito una serie de factores de riesgo asociados al cáncer de tiroides, entre ellos el sexo (3 veces más común en mujeres que en hombres), el historial familiar, el sobrepeso y ser fumador (3), especialmente el sobrepeso, alcoholismo y el ser fumador (4).
+
+En cuanto a las hormonas tiroideas, se ha descrito una relación significativa entre concentraciones altas de TSH y FT4, y concentraciones bajas de FT3 (5). Tanto la tiroglobulina (6) como la calcitonina (7) han mostrado ser potentes biomarcadores del cáncer de tiroides.
+
+# **Objetivos**
+
+En este proyecto se analizará el conjunto de datos "Multi Visit Thyroid Cancer monitoring" con el objetivo de explorar qué variables pueden ser determinantes en el cáncer de tiroides. Con ese fin, se plantean las siguientes variables respuesta:
+
+-   **¿El tabaco o el historial familiar aumentan las probabilidades de sufrir cáncer de tiroides?**
+
+-   **¿El riesgo de recidiva está relacionado con algún factor?**
+
+-   **¿La disminución del tamaño del tumor entre la primera y la última visita se refleja en alguno de los biomarcadores hormonales tiroideos?** (TSH_Risk_Level, TPOAb_Probability, Thyroglobulin_Level_Predicted, Calcitonin_Level_Predicted, Reverse_T3_Index)
+
+-   **Modelo predictivo de recidiva**
+
+# **Material y métodos**
+
+## Descripción del dataset
+
+El dataset estudiado en este trabajo, obtenido del repositorio Kaggle (Multi Visit Thyroid Cancer Monitoring Dataset- SHD), contiene información de múltiples pacientes de cáncer de tiroide, estructurada por visitas de cada paciente. El dataset está recopilado a partir de datos anonimizados de pacientes de centros clínicos colaboradores y plataformas de monitoreo de telesalud entre 2015 y 2025,y captura patrones temporales de salud derivados de dispositivos wearables, escaneos de diagnóstico y análisis hormonales. Esta información está recogida en las siguientes variables:
+
+```{r, echo=FALSE}
+# Define los datos como un data frame
+variable_descriptions <- data.frame(
+  Variable = c(
+    "Patient_ID", "Visit_Number", "Visit_Timestamp", "Scan_Type", "Age", "Gender", "Weight_kg", "Height_cm", "BMI",
+    "Family_History", "Smoking_Status", "Radiation_Exposure", "Nodule_Size_mm", "Shape_Score", "Margin_Sharpness",
+    "Echogenicity_Index", "Calcification_Presence", "Vascularity_Score", "Texture_Entropy", "Asymmetry_Score",
+    "Capsular_Invasion_Indicator", "TSH_Risk_Level", "TPOAb_Probability", "Thyroglobulin_Level_Predicted",
+    "Calcitonin_Level_Predicted", "Reverse_T3_Index", "Heart_Rate", "Daily_Steps", "Sleep_Patterns",
+    "Body_Temperature", "Pulse_Oximetry", "Stress_Level", "Symptom_Onset_Duration", "Hormonal_Change_Rate",
+    "Medication_Adherence", "Diagnosis_Label", "Cancer_Type", "Recurrence_Risk"
+  ),
+  Description = c(
+    "Identificador único del paciente", "Número de visita clínica", "Fecha de la visita clínica",
+    "Tipo de escáner realizado", "Edad del paciente", "Sexo del paciente", "Peso del paciente",
+    "Altura del paciente", "Índice de masa corporal del paciente",
+    "Presencia de enfermedad tiroidea en la familia", "Indica si el paciente es fumador",
+    "Indica si ha estado expuesto a radioterapia o fuentes de radiación", "Tamaño en mm del nódulo",
+    "Forma del nódulo", "Irregularidad del nódulo", "Índice de ecogenicidad tumoral",
+    "Presencia de calcificación, indicador maligno", "Presencia de nuevos vasos sanguíneos, biomarcador maligno",
+    "Forma irregular del tumor, biomarcador maligno", "Asimetría del tumor, biomarcador maligno",
+    "Extensión del tumor más allá de sus márgenes, indicador maligno", "Niveles de TSH, biomarcador maligno",
+    "Probabilidad de anticuerpos antitiroperoxidasa", "Niveles de tiroglobulina, marcador de metástasis y recidiva",
+    "Niveles de calcitonina, posible biomarcador de diagnóstico", "Niveles de T3 reversa, posible biomarcador maligno",
+    "Frecuencia cardíaca del paciente", "Número de pasos diarios del paciente", "Patrón de sueño del paciente",
+    "Temperatura corporal del paciente", "Saturación de oxígeno en sangre", "Nivel de estrés del paciente",
+    "Duración de los síntomas desde su inicio", "Tasa de cambio hormonal", "Cumplimiento con el tratamiento",
+    "Clasificación del tumor", "Subtipo de cáncer", "Riesgo de recidiva"
+  )
+)
+
+kable(variable_descriptions, caption = "Descripción de las variables del dataset")
+```
+
+## Análisis exploratorio
+
+En este apartado se llevará a cabo el análisis exploratorio de los datos (EDA, por sus siglas en inglés), con el objetivo de comprender mejor su estructura, distribución y posibles relaciones entre variables. A través de visualizaciones y estadísticas descriptivas, evaluaremos la calidad de los datos, identificaremos valores faltantes y detectaremos posibles outliers. Esto nos permitirá tomar decisiones informadas sobre si conviene eliminar o imputar los datos faltantes, así como tratar los valores atípicos según corresponda.
+
+```{r, echo=FALSE}
+#Importación del dataset
+data<-read.csv("ThyroTrack-MV Processed Dataset.csv")
+```
+
+```{r, echo=FALSE}
+#Observar la estructura del dataset y estadística descriptiva resumida
+skim(data)
+```
+
+Aplicando la función **skim()** del paquete **skmimr** se observa que el dataset contiene 38 variables totales, de las cuales 6 son de tipo carácter y 32 variables son de tipo numérico. No obstante, a muchas de estas variables no han sido clasificadas correctamente: por ejemplo, aunque las variables **Scan_type** o **Gender** se indiquen de tipo carácter, deberían estar descritas como tipo factor, con sus respectivos niveles. Lo mismo sucede para múltiples de las variables numéricas: hay variables como **Family_history** que son dicotómicas (niveles 0 y 1), pero realmente deberían estar descritas como tipo factor. Es por ello que el siguiente paso en la limpieza de datos consiste en transformar una serie de variables seleccionadas al tipo factor, donde también modificaremos los valores de los niveles para que sean más visuales e intuitivos.
+
+Por otro lado, esta misma función mencionada, también aporta información acerca de los datos faltantes. Se observa que el dataset con el que trabajamos no presenta ningún dato faltante, por lo que no es necesario su procesamiento.
+
+```{r, echo=FALSE}
+#Reetiquetar los niveles de las variables tipo factor
+data2 <- data %>%
+  mutate(
+    Visit_Number = as.factor(Visit_Number),
+    Gender = as.factor(Gender),
+    Scan_Type = as.factor(Scan_Type),
+    Smoking_Status = as.factor(Smoking_Status),
+    TSH_Risk_Level = as.factor(TSH_Risk_Level),
+
+    Family_History = factor(Family_History, levels = c(0, 1), labels = c("No", "Yes")),
+    Radiation_Exposure = factor(Radiation_Exposure, levels = c(0, 1), labels = c("No", "Yes")),
+    Calcification_Presence = factor(Calcification_Presence, levels = c(0, 1), labels = c("No", "Yes")),
+    Capsular_Invasion_Indicator = factor(Capsular_Invasion_Indicator, levels = c(0, 1), labels = c("No", "Yes")),
+    Medication_Adherence = factor(Medication_Adherence, levels = c(0, 1), labels = c("No", "Yes")),
+    Diagnosis_Label = factor(Diagnosis_Label, levels = c(0, 1), labels = c("Benign", "Malignant")),
+    Cancer_Type = factor(Cancer_Type, levels = c(0, 1, 2, 3, 4),
+                         labels = c("Papillary", "Follicular", "Medullary", "Anaplastic", "Lymphoma")),
+    Recurrence_Risk = factor(Recurrence_Risk, levels = c(0, 1), labels = c("No", "Yes"))
+  )
+```
+
+Puesto que existen una serie de variables en el dataset que no tienen importancia añadida, bien por falta de información, bien porque no parecen determinantes para el estudio, se decide reducir selectivamente la dimensión del dataframe, eliminando las variables en cuestión. Estas variables en cuestión són: **Visit_Timestamp**, **Daily_Steps**, **Sleep_Patterns**, **Symptom_Onset_Duration** y **Hormonal_Change_Rate**.
+
+```{r, echo=FALSE}
+#Eliminar las variables innecesarias en nuestro dataset
+data<-select(data,!c("Visit_Timestamp","Daily_Steps","Sleep_Patterns","Symptom_Onset_Duration","Hormonal_Change_Rate"))
+data2<-select(data2,!c("Visit_Timestamp","Daily_Steps","Sleep_Patterns","Symptom_Onset_Duration","Hormonal_Change_Rate"))
+
+skim(data2)
+```
+
+Una vez transformadas las variables necesarias al tipo factor y eliminadas las variables sin importancia para nuestro estudio, se aplica nuevamente la función skim() y se observa la nueva clasificación de las variables: 1 de tipo carácter, 13 de tipo factor y 19 variables numéricas.
+
+En respuesta a la pregunta de si el **tabaco** o el **historial familiar** aumentan las probabilidades de sufrir cáncer de tiroides, vemos que al estudiar la frecuencia de datos en cada nivel de estas dos variables categóricas, confirmamos que hay una mayor frecuencia de pacientes que presentan historial familiar, acorde con lo descrito en la literatura. Sin embargo, mientras que el tabaco está también descrito como factor de riesgo, en nuestro dataset vemos una frecuencia mucho mayor de pacientes no fumadores que de pacientes fumadores.
+
+### *Detección de outliers*
+
+Debido al sesgo que pueden generar los outliers en el análisis exploratorio, es importante hacer un estudio de los mismos. Para ello, se hace tanto una primera inspección visual mediante boxplots y una segunda, más detallada, utilizando el rango intercuartílico.
+
+**Boxplots**:
+
+```{r, echo=FALSE}
+#Detección visual de outliers mediante boxplots
+
+par(mfrow = c(2,4))
+for (i in names(data2)) {
+  if (is.numeric(data2[[i]])) {
+    boxplot(data2[[i]],
+            main = paste("Boxplot de", i),
+            xlab = i,
+            ylab = "Valor",
+            col = "skyblue")
+  }
+}
+
+```
+
+**IQR**:
+
+```{r, echo=FALSE}
+# Detección de outliers
+detect_outliers_iqr <- function(data2) {
+  outliers <- list()
+  for (col_name in names(data2)) {
+    if (is.numeric(data2[[col_name]])) {
+      Q1 <- quantile(data2[[col_name]], 0.25, na.rm = TRUE)
+      Q3 <- quantile(data2[[col_name]], 0.75, na.rm = TRUE)
+      IQR <- Q3 - Q1
+      lower_bound <- Q1 - 1.5 * IQR
+      upper_bound <- Q3 + 1.5 * IQR
+      outliers[[col_name]] <- data2[[col_name]][data2[[col_name]] < lower_bound | data2[[col_name]] > upper_bound]
+    }
+  }
+  return(outliers)
+}
+
+# Calcular y mostrar el conteo de outliers como tabla bonita
+outliers_data <- detect_outliers_iqr(data2)
+
+outlier_counts <- enframe(sapply(outliers_data, length), name = "Variable", value = "Num_Outliers") %>%
+  arrange(desc(Num_Outliers))
+
+knitr::kable(outlier_counts, caption = "Número de outliers por variable numérica")
+```
+
+Tras realizar la detección de outliers, se procede a su eliminación. El criterio escogido es eliminar outliers únicamente es base a la variable **Peso (kg)**, puesto que el resto de variables numéricas son concentraciones de hormonas o valores de escalas para las cuales los valores podrían resultar dispares y anormales debido al estado de enfermedad de los pacientes. Teniendo en cuenta que la edad mínima presente en el dataset es 18 años, resulta evidente que valores de por ejemplo 2,4kg son totalmente imposibles. De nuevo teniendo en cuenta que son personas en un estado de una enfermedad con probabilidad de tener efectos sobre el metabolismo, se decide eliminar todas aquellas observaciones que muestren un peso menor a 20kg. Por esta razón, eliminaremos los valores de **BMI** inferiores a 9, ya que un índice tan bajo indicaría un nivel de desnutrición crítico, probablemente incompatible con la vida en una persona adulta. Este tipo de valores suelen deberse a errores de registro o a datos atípicos no representativos, por lo que no los consideraremos en el análisis.
+
+```{r, echo=FALSE}
+#Eliminar los outliers
+data <- sqldf("SELECT *
+               FROM data
+               WHERE Weight_kg > 20 AND BMI >= 9")
+
+data2 <- sqldf("SELECT *
+               FROM data2
+               WHERE Weight_kg > 20 AND BMI >= 9")
+```
+
+### *Visualización de datos*
+
+Vamos a empezar viendo cómo se comportan las variables categóricas. Esto nos ayudará a entender mejor los datos y detectar cualquier detalle importante.
+
+```{r, echo=FALSE, warning=FALSE}
+# Seleccionar solo variables de tipo factor
+factorvar <- data2 %>%
+  select_if(is.factor)
+
+total_n <- nrow(data2)  # Total de observaciones
+
+plots <- list()  # Lista vacía para almacenar gráficos
+
+for (i in names(factorvar)) {
+  if (i == "Recurrence_Risk") next  # Saltar la variable de riesgo si está en las categóricas
+
+  # Agrupar y calcular conteo y porcentaje
+  bar_data <- data2 %>%
+    group_by(!!sym(i), Recurrence_Risk) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    mutate(percent = n / total_n * 100) %>%
+    complete(!!sym(i), Recurrence_Risk, fill = list(n = 0, percent = 0))  # Asegurar combinaciones
+
+  # Crear gráfico
+  p <- ggplot(bar_data, aes(x = !!sym(i), y = n, fill = Recurrence_Risk)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    geom_text(aes(label = paste0(round(percent, 1), "%")),
+              position = position_dodge(width = 0.9),
+              vjust = -0.25, size = 3.5) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+    labs(title = i, x = NULL, y = "Conteo") +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      axis.text.x = element_text(angle = 30, hjust = 1),
+      legend.position = "none"
+    )
+
+  plots[[i]] <- p
+}
+
+# Crear leyenda compartida
+legend_plot <- ggplot(data2, aes(x = Recurrence_Risk, fill = Recurrence_Risk)) +
+  geom_bar() +
+  theme(legend.position = "bottom")
+
+shared_legend <- cowplot::get_legend(legend_plot)
+
+# Mostrar los gráficos en bloques de 4 (2x2)
+plot_blocks <- split(plots, ceiling(seq_along(plots) / 4))
+
+for (block in plot_blocks) {
+  combined <- plot_grid(plotlist = block, ncol = 2)
+  final_plot <- plot_grid(combined, shared_legend, ncol = 1, rel_heights = c(1, 0.1))
+  print(final_plot)
+}
+```
+
+Para contestar a la pregunta de si el riesgo de recidiva está relacionado con algún factor, graficamos cada variable factor de nuestro data frame en base al riesgo de decivida. Cada gráfica representa una variable factor, donde el eje X se divide en los niveles de cada una de estas variables categóricas. Dentro de cada nivel, se puede observar el número de observaciones que corresponden a un riesgo de recurrencia negativo, y las que corresponden a un riesgo de recurrencia positivo. En caso de que la diferencia entre la recurrencia positiva y negativa dentro un nivel, siga el mismo patrón dentro de los otros niveles de la variable, querrá decir que la variable no está relacionada con el riesgo de recurrencia. Por el contrario, de darse el caso de que la frecuencia del riesgo de recurrencia se comporte de modo diferente entre un nivel y otro, nos estará indicando que la variable factor representada en dicho gráfico juega un papel determinante en el comportamiento del riesgo de recurrencia.
+
+Si observamos los gráficos, podemos observar que para todas las variables ctaegóricas representadas, el patrón de cambio del riesgo de recurrencia es el mismo entre los diferentes niveles. Debido a esta observación, podríamos decir que no existe ninguna variable en nuestro dataset que genere un impacto sobre el riesgo de recurrencia.
+
+A continuación, vamos a revisar cómo se conectan las variables numéricas entre sí. Para eso, usaremos una matriz de correlación que nos mostrará qué tan fuertes son esas relaciones y nos ayudará a identificar patrones o asociaciones importantes en los datos.
+
+```{r, echo=FALSE}
+#Subset exclusivamente con las variables numéricas
+corrdata<-data2%>%
+  select_if(is.numeric)
+
+#Creación de la matriz de correlación
+matrizcorr<-corrdata%>%
+  cor(method="pearson")
+
+#Visualización de la matriz de p-valores
+
+p_values <- matrizcorr %>% cor_pmat() %>% as.matrix()
+
+#Visualización de la matriz de correlación
+
+corrplot(matrizcorr,
+    method="circle",
+    type="lower",
+    p.mat=p_values,
+    sig.level=0.05,
+    insig="blank",
+    diag=FALSE)
+```
+
+Observamos que la mayoría de las celdas del gráfico están vacías, lo que indica que la correlación entre esas variables no es estadísticamente significativa. Sin embargo, hay dos pares de variables donde sí se observa correlación significativa:
+
+-   **BMI y Weight_kg:** presentan una correlación fuerte y positiva, lo que significa que a medida que aumenta el peso en kilogramos, también aumenta el índice de masa corporal.
+
+-   **BMI y Height_cm:** muestran una correlación débil y negativa, lo que indica que a medida que aumenta la altura, el índice de masa corporal tiende a disminuir ligeramente.
+
+```{r, echo=FALSE}
+ggpairs(corrdata[, c("Weight_kg", "Height_cm", "BMI")])
+```
+
+Es posible que el **Weight_kg** y la **Height_cm** contengan algún tipo de valor predictivo para nuestra variable objetivo, pero ambas características ya están combinadas en la variable **BMI**. Incluir las tres variables simultáneamente en nuestro modelo podría introducir el problema de la multicolinealidad para determinados modelos, dadas las elevadas correlaciones entre pares. En consecuencia, el modelo no podría distinguir cuál de las características correlacionadas es responsable de un cambio en el resultado, lo que daría lugar a estimaciones de coeficientes inestables, errores estándar más elevados y dificultades generales de interpretación. Para confirmarlo calcularemos su VIF y así nos aseguramos que vale quitarlas.
+
+```{r, echo=FALSE}
+modelo <- glm(Recurrence_Risk ~ Weight_kg + Height_cm + BMI, 
+              data = data2, family = binomial)
+
+vif_values <- vif(modelo)
+
+kable(vif_values, caption = "Factores de inflación de la varianza (VIF)")
+```
+
+El VIF es muy elevado, por lo tanto confirmamos que vale la pena quitarlas de la bbdd para realizar nuestro modelo predictivo.
+
+```{r, echo=FALSE}
+data <- data %>% select(-Weight_kg, -Height_cm)
+data2 <- data2 %>% select(-Weight_kg, -Height_cm)
+```
+
+### Análisis de biomarcadores
+
+En este dataset, cada paciente esta asociado a múltiples medidas, tomadas durante diferentes visitas clínicas y ordenadas cronológicamente. Podemos utilizar los valores de la primera y última visita de cada paciente para observar como evolucionan las variables, detectar si se producen incrementos o disminuciones en estas y determinar si estos cambios en las variables estan correlacionados entre ellos. Para hacer esto, se genera un nuevo dataframe a partir del dataset, calculando la diferencia entre los valores de la última visita con los valores de la primera visita.
+
+```{r, echo=FALSE}
+#Creación de un nuevo dataframe con las variables a analizar
+result <- data[, c("Patient_ID", "Visit_Number", "Age", "BMI", "Gender", "Family_History", "Smoking_Status", "Nodule_Size_mm", "TSH_Risk_Level", "TPOAb_Probability", "Thyroglobulin_Level_Predicted", "Calcitonin_Level_Predicted", "Reverse_T3_Index")]
+
+#Restar los valores de la visita final con los de la visita inicial
+
+result <- result %>%
+  group_by(Patient_ID) %>%
+  summarise(
+    Age = first(Age), #Para valores que no cambian, incluir solo el primero
+    BMI = first(BMI),
+    Gender = first(Gender),
+    Family_History = first(Family_History),
+    Smoking_Status = first(Smoking_Status),
+    Nodule_Size_mm = last(Nodule_Size_mm) - first(Nodule_Size_mm),
+    TPOAb_Probability = last(TPOAb_Probability) - first(TPOAb_Probability),
+    Thyroglobulin_Level_Predicted = last(Thyroglobulin_Level_Predicted) - first(Thyroglobulin_Level_Predicted),
+    Calcitonin_Level_Predicted = last(Calcitonin_Level_Predicted) - first(Calcitonin_Level_Predicted),
+    Reverse_T3_Index = last(Reverse_T3_Index) - first(Reverse_T3_Index),
+    TSH_Risk_Level = paste(first(TSH_Risk_Level), last(TSH_Risk_Level), collapse = ", ") #En este caso, combinamos el contenido de ambas columnas en una sola
+  )
+```
+
+Las variables del dataframe generado són: `r names(result)`
+
+Con este dataframe generado, podemos observar la distribución de los datos de forma visual usando boxplots.
+
+```{r, echo=FALSE}
+par(mfrow = c(2,4))
+for (i in names(result)) {
+  if (is.numeric(result[[i]])) {
+    boxplot(result[[i]],
+            main = paste("Boxplot de", i),
+            xlab = i,
+            ylab = "Valor",
+            col = "skyblue")
+  }
+}
+```
+
+Observamos que los valores de las diferentes variables que se han alterado se agrupan alrededor de 0. Ahora, estudiamos como la evolución de estas variables correlacionan las unas con las otras usando matrices de correlación con los métodos Pearson y Spearman.
+
+```{r, echo=FALSE, warning=FALSE, out.width="\\textwidth"}
+#Subset exclusivamente con las variables numéricas
+corresult<-result%>%
+  select_if(is.numeric)
+
+#Creación de la matriz de correlación con el método Pearson
+correlation_matrix <- cor(corresult, use = "pairwise.complete.obs", method = "pearson")
+
+#Cálculo de las p-valores (Pearson)
+get_p_values <- function(cor_matrix) {
+  n <- ncol(cor_matrix)
+  p_matrix <- matrix(NA, n, n)
+  diag(p_matrix) <- 0
+
+  for (i in 1:(n-1)) {
+    for (j in (i+1):n) {
+      test <- cor.test(corresult[[i]], corresult[[j]], method = "pearson")
+      p_matrix[i, j] <- test$p.value
+      p_matrix[j, i] <- test$p.value
+    }
+  }
+
+  colnames(p_matrix) <- colnames(cor_matrix)
+  rownames(p_matrix) <- colnames(cor_matrix)
+  return(p_matrix)
+}
+
+#Creación de la matriz de p-valores (Pearson)
+p_value_matrix <- get_p_values(correlation_matrix)
+
+
+#Creación de la matriz de correlación con el método Spearman
+correlation_matrix2 <- cor(corresult, use = "pairwise.complete.obs", method = "spearman")
+
+#Cálculo de las p-valores (Spearman)
+get_p_values2 <- function(cor_matrix2) {
+  n <- ncol(cor_matrix2)
+  p_matrix2 <- matrix(NA, n, n)
+  diag(p_matrix2) <- 0
+
+  for (i in 1:(n-1)) {
+    for (j in (i+1):n) {
+      test2 <- cor.test(corresult[[i]], corresult[[j]], method = "spearman")
+      p_matrix2[i, j] <- test2$p.value
+      p_matrix2[j, i] <- test2$p.value
+    }
+  }
+
+  colnames(p_matrix2) <- colnames(cor_matrix2)
+  rownames(p_matrix2) <- colnames(cor_matrix2)
+  return(p_matrix2)
+}
+
+#Creación de la matriz de p-valores (Spearman)
+p_value_matrix2 <- get_p_values2(correlation_matrix2)
+
+
+par(mfrow = c(1, 2))
+#Visualización de la matriz de correlación con el método Pearson
+corrplot(correlation_matrix,
+         method="circle",
+         type="lower",
+         p.mat=p_value_matrix,
+         sig.level=0.05,
+         insig="blank",
+         diag=FALSE)
+
+title("Matriz de Correlación (Pearson)", line = 2)
+
+#Visualización de la matriz de correlación con el método Spearman
+corrplot(correlation_matrix2,
+         method="circle",
+         type="lower",
+         p.mat=p_value_matrix2,
+         sig.level=0.05,
+         insig="blank",
+         diag=FALSE)
+
+title("Matriz de Correlación (Spearman)", line = 2)
+```
+
+Se observa que no hay ninguna variable que correlacione con alguna otra, tanto usando el método Pearson como el método Spearman.
+
+### Conclusiones del análisis exploratorio
+
+Todos los análisis realizados hasta ahora nos permiten responder a las preguntas planteadas inicialmente:
+
+-   **¿El tabaco o el historial familiar aumentan las probabilidades de sufrir cáncer de tiroides?** Acorde con lo descrito en la literatura, tanto el tabaco como el historial familiar son factores de riesgo del cáncer de tiroides. Mientras que nuestro dataset sí muestra una mayor frecuencia de pacientes que con historial familiar en cáncer de tiroides, el hecho de no ser fumador se ve con una frecuencia mucho mayor en nuestro dataset.
+
+-   **¿El riesgo de recidiva está relacionado con algún factor?** A priori, no se ve ninguna relación entre el riesgo de recidiva y las variables factor estudiadas: número de visita, tipo de escáner, sexo, historial familiar, tabaco, exposición a radiación, presencia de calcificación, indicador de invasión capsular, riesgo de TSH, adherencia a la medicación, diagnóstico, tipo de cáncer. La proporción de riesgo de recurrencia se mantiene para todos los niveles de cada variables categórica.
+
+-   **¿La disminución del tamaño del tumor entre la primera y la última visita se refleja en alguno de los biomarcadores hormonales tiroideos?**
+
+    Tras estudiar las diferencias de valores de hormona entre la última y la primera visita de cada paciente, no se observa ninguna correlación entre la diferencia del tamaño del tumor entre las visitas y la diferencia de valores de hormonas entre estas visitas. De este modo, confirmamos que en nuestro dataset, ninguna de estas hormonas/moléculas (TPOAb_Probability, Thyroglobulin_Level_Predicted, Calcitonin_Level_Predicted, Reverse_T3_Index)podría establecerse como biomarcador de aumento/disminución del tumor.
+
+# Modelo predictivo
+
+```{r, include=FALSE}
+# Importar módulos Python
+sklearn <- import("sklearn")
+Pipeline <- sklearn$pipeline$Pipeline
+preprocessing <- sklearn$preprocessing
+compose <- import("sklearn.compose")
+pandas <- import("pandas")
+plt <- import("matplotlib.pyplot")
+np <- import("numpy")
+metrics <- import("sklearn.metrics")
+LogisticRegression <- sklearn$linear_model$LogisticRegression
+GridSearchCV <- sklearn$model_selection$GridSearchCV
+StratifiedKFold <- sklearn$model_selection$StratifiedKFold
+tqdm <- import("tqdm")
+model_selection <- import("sklearn.model_selection")
+ColumnTransformer <- sklearn$compose$ColumnTransformer
+OneHotEncoder <- sklearn$preprocessing$OneHotEncoder
+OrdinalEncoder <- sklearn$preprocessing$OrdinalEncoder
+SimpleImputer <- sklearn$impute$SimpleImputer
+StandardScaler <- sklearn$preprocessing$StandardScaler
+classification_report <- import("sklearn.metrics")$classification_report
+# Importar sklearn y tuple
+sklearn_pipeline <- import("sklearn.pipeline")
+tuple <- import_builtins()$tuple
+sklearn_compose <- import("sklearn.compose")
+compute_class_weight <- import("sklearn.utils.class_weight")$compute_class_weight
+dict <- import_builtins()$dict
+RandomForestClassifier <- import("sklearn.ensemble")$RandomForestClassifier
+```
+
+En esta sección, exploraremos la posibilidad de predecir la recurrencia del cáncer de tiroides basándonos en las demás características incluidas en este conjunto de datos. Dado que la información de cada paciente se extrajo a través de múltiples visitas, emplear esta información temporal para incluir la evolución del estado de cada paciente a lo largo del tiempo sería quizá lo más informativo para nuestra predicción. Sin embargo, dado que se registraron diferentes cantidades de visitas para cada paciente, entre 2 y 5 visitas, tratar esta discrepancia requeriría técnicas que podrían ser demasiado complejas dentro del alcance de este proyecto. Por lo tanto, en adelante analizaremos las mediciones realizadas durante la última visita de cada paciente para predecir el riesgo de recurrencia, ya que este registro contiene la información más reciente sobre el estado del paciente.
+
+Como no está claro de antemano qué tipo de modelo sería el más adecuado para esta tarea, implementaremos y compararemos algunos de los algoritmos de machine learning más populares y avanzados para este tipo de problema. Dado que nos enfrentamos a un problema de clasificación binaria (nuestra predicción será ‘recurrencia’ o ‘no recurrencia’), trabajaremos con cuatro modelos diferentes que han demostrado funcionar muy bien en este contexto. Empezaremos con un modelo sencillo de regresión logística, seguido de un Random Forest, un modelo XGBoost más especializado y, por último, una red neuronal artificial. Sin embargo, antes de pasar a la aplicación real de estos modelos, es necesario tomar una serie de decisiones con respecto a la selección de características y al posterior preprocesamiento de los datos.
+
+En lo que respecta a la selección de variables explicativas, sólo queremos eliminar antes del análisis aquellas de las que podamos suponer con seguridad que tienen un valor predictivo escaso o nulo. Trabajamos con un conjunto de 33 predictores posibles. Por lo tanto, decidimos excluir del análisis las variables: **Patient_ID**, **Visit_Number**, **Scan_Type**.
+
+```{r, echo=FALSE}
+data_py <- r_to_py(data)
+```
+
+```{r, echo=FALSE}
+df_sorted <- data_py$sort_values(by = list("Patient_ID", "Visit_Number"))
+df_last_visits <- df_sorted$groupby("Patient_ID", as_index = FALSE)$last()
+```
+
+```{r, include=FALSE}
+print(df_last_visits[["Patient_ID"]]$is_unique)
+```
+
+Antes de proceder con el entrenamiento de los modelos, comenzaremos por preparar adecuadamente los datos. Para ello, primero separaremos la base de datos en dos partes: las variables explicativas, que almacenaremos en una matriz llamada X, y la variable objetivo o respuesta, que almacenaremos en un vector denominado y. Esta separación es fundamental para que los algoritmos de aprendizaje automático puedan identificar patrones en los datos que expliquen la variable que queremos predecir.
+
+```{r, echo=FALSE}
+# Definir las columnas como listas en R
+ordinal_cols <- list("Smoking_Status")
+nominal_cols <- list("Gender", "TSH_Risk_Level", "Cancer_Type")
+binary_cols <- list("Family_History", "Radiation_Exposure", "Calcification_Presence",
+                    "Capsular_Invasion_Indicator", "Medication_Adherence", "Diagnosis_Label")
+numeric_skewed_cols <- list("Nodule_Size_mm", "Shape_Score", "Margin_Sharpness", 
+                            "TPOAb_Probability", "Thyroglobulin_Level_Predicted", "Calcitonin_Level_Predicted")
+numeric_nonskewed_cols <- list("Age", "BMI", "Echogenicity_Index", "Vascularity_Score", 
+                               "Texture_Entropy", "Asymmetry_Score", "Reverse_T3_Index", 
+                               "Heart_Rate", "Body_Temperature", "Pulse_Oximetry", "Stress_Level")
+
+# Unir todas las columnas
+all_cols <- c(ordinal_cols, nominal_cols, binary_cols, numeric_skewed_cols, numeric_nonskewed_cols)
+
+# Seleccionar las columnas del DataFrame Python
+X <- df_last_visits[all_cols]
+y <- df_last_visits[["Recurrence_Risk"]]
+```
+
+Una vez realizada esta separación, dividiremos los datos en dos subconjuntos: uno de entrenamiento (train), que utilizaremos para ajustar los modelos, y otro de prueba (test), que servirá para evaluar su rendimiento sobre datos no vistos previamente.
+
+```{r, echo=FALSE}
+train_test_split <- import("sklearn.model_selection")$train_test_split
+
+# Convertir y para evitar problemas con pandas.Categorical
+y <- np$array(y)
+
+# Dividir conjunto de datos
+split <- train_test_split(X, y, test_size = 0.2, random_state = as.integer(42))
+
+X_train <- split[[1]]
+X_test  <- split[[2]]
+y_train <- split[[3]]
+y_test  <- split[[4]]
+```
+
+Luego de realizar la división de los datos, el conjunto de entrenamiento **X_train** queda conformado por `r nrow(X_train)` filas y `r ncol(X_train)` columnas, correspondientes a las observaciones y variables explicativas, respectivamente. Por su parte, el conjunto de prueba **X_test** contiene `r nrow(X_test)` filas y `r ncol(X_test)` columnas.
+
+En cuanto a la variable **y_train**, es importante verificar que se mantenga una proporción adecuada de valores positivos (y negativos) tras la división. Esto garantiza que el conjunto de entrenamiento sea representativo del total y que el modelo pueda aprender correctamente las características asociadas a ambas clases. Es decir, que el conjunto esté equilibrado. En nuestro caso, obtenemos una proporción de:
+
+```{r, echo=FALSE}
+# Frecuencia absoluta
+freq_table <- table(y_train)
+
+# Distribución porcentual
+percent_distribution <- prop.table(freq_table) * 100
+
+# Convertir a data.frame
+distribution_df <- data.frame(
+  Clase = names(freq_table),
+  Frecuencia = as.vector(freq_table),
+  Porcentaje = round(as.vector(percent_distribution), 2)
+)
+
+# Mostrar como tabla con kable
+knitr::kable(distribution_df, caption = "Distribución de clases en y_train", align = "lrr")
+```
+
+```{r, echo=FALSE}
+ordinal_categories <- list('Non-Smoker', 'Former Smoker', 'Smoker')
+```
+
+## Regressión logística
+
+Como modelo inicial para nuestra tarea de clasificación binaria, empleamos una **regresión logística**, una técnica ampliamente utilizada por su **simplicidad, rapidez de entrenamiento e interpretabilidad**. Este modelo no predice directamente el valor de la variable objetivo, sino la **probabilidad** de que una observación pertenezca a la clase positiva (y = 1). Específicamente, modela el **logaritmo de las probabilidades** (log-odds) como una función lineal de las variables predictoras:
+
+$$\ln\left(\frac{P(y=1|x)}{1 - P(y=1|x)}\right) = \beta_0 + \beta_1 x_1 + \cdots + \beta_n x_n $$
+
+Dado que se trata de un modelo lineal generalizado, la regresión logística asume que la relación entre los predictores y el log-odds es **lineal**. Esta suposición permite cierta flexibilidad, ya que la relación entre las variables y la probabilidad en sí no necesita ser lineal. Sin embargo, el modelo básico **no captura automáticamente interacciones ni efectos no lineales**, a menos que se introduzcan de forma explícita. Esto suele requerir **conocimiento experto del dominio**, del cual no disponemos para este caso particular.
+
+Otros supuestos importantes incluyen la **ausencia de multicolinealidad perfecta** entre variables y la **necesidad de un tamaño de muestra adecuado** para que la estimación por máxima verosimilitud sea fiable. En nuestro caso, contamos con 79.773 observaciones, por lo que este requisito se cumple con holgura.
+
+**Preprocesamiento de los datos**
+
+Antes de ajustar el modelo, es necesario aplicar ciertos pasos de preprocesamiento:
+
+1.  **Corrección de asimetrías**
+
+    Algunas variables numéricas presentan una distribución sesgada. Para abordar este problema, aplicamos la **transformación de Yeo-Johnson**, que permite corregir tanto la asimetría positiva como negativa. Esta transformación mejora la linealidad de la relación entre las variables y el log-odds, y reduce el impacto de los valores atípicos, especialmente útil en nuestro caso, donde no se ha realizado una eliminación extensiva de outliers.
+
+2.  **Estandarización de las variables**
+
+    Como la regresión logística se entrena mediante algoritmos basados en gradientes, es fundamental que todas las variables numéricas estén en una **escala comparable**. Para ello, aplicamos un **escalado estándar** (media = 0, desviación estándar = 1) a las variables numéricas y ordinales. Esto facilita la convergencia del algoritmo de optimización y asegura que cualquier regularización (L1 o L2) se aplique de forma equitativa.
+
+    Las variables **binarias y categóricas** (ya codificadas como 0 o 1) se dejan sin escalar, ya que ya se encuentran en una escala adecuada. Si bien podrían estandarizarse, en la práctica esto no suele ser necesario.
+
+En la fase de interpretación, es importante tener en cuenta que cada coeficiente se refiere a la **escala transformada** de la variable correspondiente, aunque su significado se mantiene consistente con su efecto sobre la probabilidad de pertenecer a la clase positiva.
+
+```{r, echo=FALSE}
+#sklearn <- import("sklearn")
+#preprocessing <- sklearn$preprocessing
+#Pipeline <- sklearn$pipeline$Pipeline
+
+#lr_ordinal_pipeline <- Pipeline(list(
+#  list("ordinal_enc", preprocessing$OrdinalEncoder(
+#    categories = ordinal_categories,
+#    handle_unknown = "use_encoded_value",
+#    unknown_value = as.integer(-1)
+#  )),
+#  list("scaler", preprocessing$StandardScaler())
+#))
+
+# Nominal pipeline: OneHotEncoder
+#lr_nominal_pipeline <- Pipeline(list(
+#  list("nominal_enc", preprocessing$OneHotEncoder(drop = "first", handle_unknown = "ignore"))
+#))
+
+# Numeric skewed pipeline: PowerTransformer (sin standardize) + StandardScaler
+#lr_skewed_pipeline <- Pipeline(list(
+#  list("power", preprocessing$PowerTransformer(method = "yeo-johnson", standardize = FALSE)),
+#  list("scale", preprocessing$StandardScaler())
+#))
+
+# Numeric non-skewed pipeline: StandardScaler
+#lr_nonskewed_pipeline <- Pipeline(list(
+#  list("scale", preprocessing$StandardScaler())
+#))
+```
+
+```{r, echo=FALSE}
+# Crear el preprocesador combinando todos los pipelines
+#ColumnTransformer <- sklearn$compose$ColumnTransformer
+
+#lr_preprocessor <- ColumnTransformer(transformers = list(
+#  list("ordinal", lr_ordinal_pipeline, ordinal_cols),
+#  list("nominal", lr_nominal_pipeline, nominal_cols),
+#  list("binary", "passthrough", binary_cols),
+#  list("skewed", lr_skewed_pipeline, numeric_skewed_cols),
+#  list("non-skewed", lr_nonskewed_pipeline, numeric_nonskewed_cols)
+#))
+```
+
+```{r, include=FALSE}
+# Ajustar
+#lr_preprocessor$fit(X)
+```
+
+```{r, include=FALSE}
+# Transformar
+#X_transformed <- lr_preprocessor$transform(X)
+
+# Obtener nombres de columnas
+#ohe <- lr_preprocessor$named_transformers_[["nominal"]]
+#ohe_features <- ohe$get_feature_names_out(nominal_cols)
+
+# Crear DataFrame con nombres
+#all_feature_names <- c(ordinal_cols, as.character(ohe_features), binary_cols,
+#                       numeric_skewed_cols, numeric_nonskewed_cols)
+# Asegúrate de que los nombres están como vector simple
+#all_feature_names <- unlist(all_feature_names)
+
+# Convertir a data.frame y asignar nombres de columna
+#df_transformed <- as.data.frame(X_transformed)
+#colnames(df_transformed) <- all_feature_names
+
+#df_transformed <- r_to_py(df_transformed)
+
+#plt$figure(figsize = tuple(15, 5L))
+#df_transformed$hist(
+#  bins = as.integer(30),
+#  figsize = tuple(18, 12),
+#  layout = tuple(as.integer(np$ceil(length(df_transformed$columns) / 4)), 4L)
+#)
+#plt$suptitle("Distribuciones de las características transformadas", fontsize = 10L)
+#plt$tight_layout()
+#plt$savefig("histograma_transformadas.png") 
+#plt$close()
+```
+
+```{r, echo=FALSE, out.width="\\textwidth"}
+#knitr::include_graphics("histograma_transformadas.png")
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 19.53.46.png)
+
+![](images/Captura de pantalla 2025-06-30 a las 19.54.12.png)
+
+Antes de entrenar el modelo final, realizamos una búsqueda en cuadrícula con validación cruzada para ajustar los hiperparámetros, enfocándonos en penalización (L1 o L2) y fuerza de regularización (C). Para evitar exploraciones excesivas, fijamos el solver ‘liblinear’ y usamos pesos de clase balanceados debido al desequilibrio (10% positivos).
+
+Probamos 8 combinaciones con validación cruzada estratificada de 5 pliegues, entrenando 40 modelos en total. La mejor combinación es la que logra el mayor rendimiento promedio, lo que mejora la generalización y reduce el sobreajuste.
+
+Como la precisión es engañosa en nuestro caso, priorizamos la sensibilidad (recall) para detectar la clase minoritaria crítica, junto con precision y F1-score, métricas que equilibran la evaluación del modelo en datos desbalanceados.
+
+$$
+F_1 = 2\frac{precission*recall}{precission + recall}
+$$
+
+```{r, echo=FALSE}
+#lr_pipeline <- Pipeline(list(
+#  tuple("lr_preprocessor", lr_preprocessor),
+#  tuple("lr_classifier", LogisticRegression(
+#    solver="liblinear",
+#    class_weight="balanced",
+#    random_state=as.integer(42)
+#  ))
+#))
+```
+
+```{r, echo=FALSE}
+# Crear diccionario de hiperparámetros en R usando reticulate
+#lr_param_grid <- dict(
+#  "lr_classifier__penalty" = c("l1", "l2"),
+#  "lr_classifier__C" = c(0.01, 0.1, 1.0, 10.0)
+#)
+```
+
+```{r, echo=FALSE}
+# Crear StratifiedKFold
+#skf <- model_selection$StratifiedKFold(
+#  n_splits = 5L,
+#  shuffle = TRUE,
+#  random_state = 42L
+#)
+
+# Crear GridSearchCV
+#lr_grid_search <- model_selection$GridSearchCV(
+#  estimator = lr_pipeline,
+#  param_grid = lr_param_grid,
+#  scoring = "recall",
+#  cv = skf,
+#  n_jobs = -1L,
+#  verbose = 2L
+#)
+```
+
+```{r, include=FALSE}
+# Crear barra de progreso
+#pbar <- tqdm$tqdm(total = 1L, desc = "Training GridSearchCV")
+
+# Ajustar el modelo
+#lr_grid_search$fit(X_train, y_train)
+
+# Actualizar la barra
+#pbar$update(1L)
+
+# Cerrar la barra
+#pbar$close()
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 19.56.02.png){width="871" height="41"}
+
+```{r, echo=FALSE, comment=NA}
+# Obtener los mejores hiperparámetros como lista
+#best_params <- lr_grid_search$best_params_
+
+# Convertir el dict Python a un data.frame en R
+#params_df <- data.frame(
+#  Hiperparámetro = names(best_params),
+#  Valor = unlist(best_params, use.names = FALSE),
+#  row.names = NULL
+#)
+
+# Mostrar en formato tabla bonita
+#knitr::kable(params_df, caption = "Mejores hiperparámetros seleccionados", align = "ll")
+
+#cat(sprintf("Mejor puntuación de recall en la validación cruzada (CV): %.4f\n", lr_grid_search$best_score_))
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 19.57.28.png){width="657"}
+
+```{r, echo=FALSE}
+# Obtener el mejor modelo
+#lr_best_model <- lr_grid_search$best_estimator_
+
+# Hacer predicciones sobre el conjunto de prueba
+#y_pred <- lr_best_model$predict(X_test)
+
+# Obtener el informe como texto desde scikit-learn
+#a <- metrics$classification_report(y_test, y_pred, digits = as.integer(4))
+```
+
+```{r, echo=FALSE}
+#lines <- strsplit(a, "\n")[[1]]
+# Eliminar líneas 2 y 4
+#lines <- lines[-c(2, 5)]
+```
+
+```{r, echo=FALSE}
+# Crear una lista para guardar las filas separadas
+#split_lines <- vector("list", length(lines))
+
+#for (i in seq_along(lines)) {
+  # Separar cada línea por espacios (uno o más espacios)
+#  tokens <- strsplit(trimws(lines[i]), "\\s+")[[1]]
+  
+  # Si la fila tiene más de 5 tokens y el primero está partido en dos palabras, unir los dos primeros
+#  if (length(tokens) > 5) {
+#    tokens[1] <- paste(tokens[1], tokens[2])
+#    tokens <- tokens[-2]
+#  }
+  
+  # Si tiene menos de 5 valores, rellenar con NA para completar 5
+#  if (length(tokens) < 5) {
+#    tokens <- c(tokens, rep(NA, 5 - length(tokens)))
+#  }
+  
+#  split_lines[[i]] <- tokens
+#}
+
+# Convertir la lista en un data frame
+#df <- do.call(rbind, split_lines)
+
+# Substituir els NA de la primera fila per "Clase"
+#df[1, is.na(df[1, ])] <- "Clase"
+
+# Reordenar la primera fila: posar el cinquè valor com a primer
+#df[1, ] <- c(df[1, 5], df[1, 1:4])
+
+# Suposant que la fila 4 és df[4, ]
+
+#fila4 <- df[4, ]
+
+# Guardem els valors que volem moure (4t i 5è)
+#val4 <- fila4[4]
+#val5 <- fila4[5]
+
+# Els valors que estaven a la 2a i 3a posició
+#val2 <- fila4[2]
+#val3 <- fila4[3]
+
+# Reordenem la fila 4
+#df[4, ] <- c(fila4[1], val4, val5, val2, val3)
+
+# Convertir la matriu a data.frame
+#df <- as.data.frame(df, stringsAsFactors = FALSE)
+
+# Assignar la primera fila com a noms de columna
+#colnames(df) <- df[1, ]
+
+# Eliminar la primera fila perquè ara ja són els noms
+#df <- df[-1, ]
+
+# Opcional: Reindexar els rownames (deixar que siguin numèrics)
+#rownames(df) <- NULL
+
+# Mostrar el data.frame amb kable
+#kable(df, digits = 4, caption = "Informe de clasificación en el conjunto de prueba:")
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 19.58.29.png){width="542"}
+
+Encontramos que nuestro modelo de regresión logística funciona mejor cuando se impone una constante de regularización fuerte de 0.01 y se usa la regularización L1. Sin embargo, los puntajes obtenidos no son exactamente buenos. En los datos de prueba no vistos, obtenemos un recall para la clase positiva del 49.75%, lo que significa que solo aproximadamente la mitad de las recurrencias totales son identificadas por nuestro modelo.
+
+Además, obtenemos un puntaje de precision extremadamente bajo para la clase positiva, del 9.86%, lo que indica que cada vez que nuestro modelo predice que el cáncer de un paciente recurrirá, se equivoca en más del 90% de los casos. El hecho de que la precision obtenida sea mucho menor que el recall no es sorprendente, ya que usamos el recall como métrica principal durante el entrenamiento, y un aumento en el recall casi siempre implica una caída en la precision.
+
+Ahora que hemos determinado de manera robusta el conjunto óptimo de hiperparámetros, podemos proceder a entrenar nuestro modelo final usando todo el conjunto de entrenamiento.
+
+```{r, echo=FALSE}
+# Ajustar el modelo completo
+#lr_full_model <- lr_pipeline$fit(X_train, y_train)
+```
+
+```{r, echo=FALSE, comment=NA}
+# Predecir con el modelo entrenado
+#y_pred_test <- lr_full_model$predict(X_test)
+
+#cat("=== Evaluación final en el conjunto de prueba ===\n")
+
+# Obtener el reporte de clasificación (devuelve un string)
+#report <- classification_report(y_test, y_pred_test, digits = as.integer(4))
+
+#cat(report, "\n")
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 19.59.27.png){width="366"}
+
+Las métricas obtenidas para nuestro modelo final son muy similares a las anteriores. Esto es esperado, ya que el conjunto completo de entrenamiento no difiere mucho de las combinaciones de pliegues usadas durante la validación cruzada.
+
+Los resultados obtenidos son bastante decepcionantes, pero esto podría deberse a que un modelo de regresión logística no es el más adecuado para nuestro conjunto de datos. Quizás sea una indicación de que no existe una relación lineal entre el logaritmo de las probabilidades de nuestra variable objetivo y los predictores.
+
+Por lo tanto, pasaremos a un tipo de modelo diferente. Pero antes de hacerlo, podría valer la pena inspeccionar los coeficientes de nuestro modelo para identificar qué características son las más informativas para predecir la recurrencia del cáncer al usar Regresión Logística.
+
+```{r, echo=FALSE}
+# Extraer el modelo de regresión logística desde la canalización
+#logreg_model <- lr_pipeline$named_steps[["lr_classifier"]]
+
+# Obtener los nombres de las características tras el preprocesamiento
+#feature_names <- lr_pipeline$named_steps[["lr_preprocessor"]]$get_feature_names_out()
+
+# Obtener los coeficientes (primer vector)
+#coefficients <- logreg_model$coef_[1, ]
+
+# Crear el DataFrame como antes
+#coef_df <- pandas$DataFrame(dict(
+#  Característica = feature_names,
+#  Coeficiente = coefficients
+#))
+# Ejecutar el sort en Python directamente con py_run_string y pasar coef_df como variable global
+#py$coef_df <- coef_df
+#py_run_string("coef_df = coef_df.sort_values(by='Coeficiente', ascending=False)")
+
+# Recuperar coef_df ordenado a R
+#coef_df <- py$coef_df
+
+# Convertir coef_df de pandas a data.frame de R
+#coef_df_r <- py_to_r(coef_df)
+
+# Mostrar con kable
+#kable(coef_df_r, digits = 4, caption = "Coeficientes del modelo ordenados")
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 20.06.50.png){width="299"}
+
+Al inspeccionar los coeficientes del modelo, obtenemos una indicación de por qué no logramos puntajes muy buenos (en la clase positiva). Ninguno de los coeficientes de las características tiene un valor particularmente alto, lo que significa que nuestras distintas variables no son muy informativas para predecir la recurrencia del cáncer.Sin embargo, se pueden hacer interpretaciones interesantes. Por ejemplo, la exposición previa a radiación parece ser el mayor factor que contribuye a la probabilidad de recurrencia. Su coeficiente debe interpretarse de la siguiente manera: el logaritmo de las probabilidades de recurrencia del cáncer aumenta en 0.060841 para pacientes que fueron expuestos a radiación en comparación con aquellos que no lo fueron.Una interpretación más intuitiva (en términos de probabilidades en lugar de log-odds) se obtiene exponenciando el coeficiente, es decir: Las probabilidades de recurrencia son $e^{0.060841} = 1.0627$ veces mayores para pacientes que han estado expuestos a radiación previamente.No sorprende que los pacientes con diagnóstico maligno también tengan una mayor probabilidad de recurrencia que aquellos con un tumor benigno.Para variables que fueron escaladas, como 'Nodule_Size_mm', la interpretación es la siguiente: por cada incremento unitario en esta variable escalada, que mide el tamaño del tumor, las probabilidades de recurrencia son $e^{0.014636} = 1.0147$ veces mayores.Para coeficientes negativos, encontramos, por ejemplo, que para pacientes con tipo de cáncer 2, las probabilidades de recurrencia son $e^{-0.068603} = 0.9337$ veces las probabilidades de pacientes con tipo de cáncer 0, que es la clase de referencia que se dejó fuera tras la codificación one-hot de esta variable nominal (para evitar multicolinealidad), y por tanto tiene un coeficiente implícito de 0. Estas probabilidades para el tipo 2 también se pueden comparar con otros tipos que no sean la clase de referencia. Por ejemplo, las probabilidades de recurrencia para el tipo de cáncer 3 son $e^{0.020992 - (-0.068603)} = 1.0937$ veces mayores que las del tipo 2.
+
+## Random Forest
+
+Random Forest es un método ensemble que construye múltiples árboles de decisión usando muestras con reemplazo (bagging). En cada árbol, las divisiones se eligen entre un subconjunto aleatorio de características para aumentar la diversidad y reducir el sobreajuste.
+
+Para clasificación, la predicción final se basa en la mayoría de votos de los árboles. A diferencia de la regresión logística, Random Forest no asume linealidad y modela relaciones complejas, es robusto a variables mixtas, escala y valores atípicos, sin necesidad de preprocesamiento.
+
+Su desventaja principal es menor interpretabilidad y mayor consumo de recursos en comparación con la regresión logística.
+
+```{r, echo=FALSE}
+# Ordinal pipeline -> OrdinalEncoder
+#rf_ordinal_pipeline = Pipeline([
+#    ('ordinal_enc', OrdinalEncoder(categories=ordinal_categories))
+#])
+
+# Nominal pipeline -> OneHotEncoder
+#rf_nominal_pipeline = Pipeline([
+#    ('nominal_enc', OneHotEncoder(drop='first', handle_unknown='ignore'))
+#])
+```
+
+```{r, echo=FALSE}
+# Definir el preprocesador para todas las columnas a la vez -> no se necesita preprocesamiento para las columnas binarias
+
+#rf_preprocessor = ColumnTransformer(transformers=[
+#    ('ordinal', rf_ordinal_pipeline, ordinal_cols),
+#    ('nominal', rf_nominal_pipeline, nominal_cols),
+#    ('binary', 'passthrough', binary_cols),
+#    ('skewed', 'passthrough', numeric_skewed_cols),
+#    ('non-skewed', 'passthrough', numeric_nonskewed_cols)
+#])
+```
+
+```{r, echo=FALSE}
+# Calcular pesos personalizados
+#class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(y_train), y=y_train)
+#custom_weights = {0: class_weights[0], 1: class_weights[1] * 1.1}  # Exagerar el peso de la clase minoritaria
+```
+
+```{r, echo=FALSE}
+# Pipeline para el modelo Random Forest
+
+#rf_pipeline = Pipeline([
+#    ('rf_preprocessor', rf_preprocessor),
+#    ('rf_classifier', RandomForestClassifier(
+#        class_weight=custom_weights,
+#        max_features='sqrt',
+#        random_state=42
+#    ))
+#])
+```
+
+```{r, echo=FALSE}
+# Cuadrícula de hiperparámetros para ajuste (tuning)
+#rf_param_grid = {
+#    'rf_classifier__n_estimators': [100, 200, 300],
+#    'rf_classifier__max_depth': [None, 10, 20, 30],
+#    'rf_classifier__min_samples_split': [2, 5, 10],
+#    'rf_classifier__min_samples_leaf': [1, 2, 4]
+#}
+```
+
+De manera similar a antes, realizamos una búsqueda en cuadrícula (grid search) para encontrar la combinación óptima de configuraciones de hiperparámetros.
+
+-   n_estimators controla el número de árboles en el bosque, y por lo tanto la cantidad de conjuntos de datos más pequeños que se muestrean del conjunto completo.
+
+-   max_depth determina qué tan "profundo" puede crecer un árbol, donde 'None' permite un crecimiento completo hasta que una 'hoja' (leaf) sea pura (si una hoja no es pura, se vota por la clase mayoritaria).
+
+-   min_samples_split establece el número mínimo de observaciones necesarias para dividir un 'nodo' (node), controlando así también la profundidad de los árboles.
+
+-   min_samples_leaf determina el número mínimo de observaciones requeridas en una hoja, y puede ajustarse para controlar el sobreajuste.
+
+Inicialmente, notamos que usar solo pesos balanceados dificultaba predecir bien la clase minoritaria, con baja precisión y recall. Por eso, aplicamos pesos personalizados, asignando un peso 1.1 veces mayor a la clase positiva, logrando resultados similares a la regresión logística. Aumentar más ese peso mejoraba la clase minoritaria, pero perjudicaba mucho la mayoritaria, por lo que se descartó.
+
+Probamos 108 combinaciones de hiperparámetros con validación cruzada de 5 pliegues, entrenando 540 modelos en total. Esto llevó 80 minutos, mucho más que los 30 segundos de la regresión logística, pero sigue siendo un tiempo razonable en machine learning.
+
+```{r, echo=FALSE}
+# StratifiedKFold + GridSearch
+#cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+#rf_grid_search = GridSearchCV(
+#    rf_pipeline,
+#    param_grid=rf_param_grid,
+#    scoring='recall',
+#    cv=cv,
+#    verbose=1,
+#    n_jobs=-1,
+#    return_train_score=True
+#)
+```
+
+```{r, echo=FALSE}
+# Fase de entranamiento
+# !! Ten cuidado, ejecutar este fragmento de código lleva al menos 1,5 horas (probablemente mucho más cuando se ejecuta en Colab)!
+#with tqdm(total=1, desc="Training GridSearchCV") as pbar:
+#    rf_grid_search.fit(X_train, y_train)
+#    pbar.update(1)
+```
+
+```{r, echo=FALSE}
+# -> Puedes simplemente ejecutar este fragmento de código para cargar el mejor modelo que obtuve después de la búsqueda en cuadrícula
+#rf_grid_search = joblib.load("rf_gridsearch_results.pkl")
+```
+
+```{r, echo=FALSE}
+# Mejores parámetros
+#rf_best_params = rf_grid_search.best_params_
+#print(rf_best_params)
+#print("Mejores hiperparámetros")
+#print(f"\nMejor puntuación de recall en la validación cruzada (CV): {rf_grid_search.best_score_:.4f}")
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 18.59.00.png)
+
+```{r, echo=FALSE}
+# Evaluación final en el conjunto de prueba reservado con los mejores parámetros
+#y_pred = rf_grid_search.predict(X_test)
+#print("\nClassification Report (Test Set):")
+#print(classification_report(y_test, y_pred, digits=4))
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 19.00.07.png){width="354"}
+
+Encontramos que nuestro modelo de Random Forest obtiene su mejor rendimiento cuando se utilizan los valores más bajos para los hiperparámetros que controlan el número de árboles y su profundidad, lo que indica una complejidad relativamente baja en nuestro conjunto de datos. Por otro lado, el número mínimo de observaciones requerido en una hoja está establecido en el valor más alto, lo que indica que se prestó considerable atención a evitar el sobreajuste.
+
+Utilizando esta combinación de valores de hiperparámetros, obtenemos un rendimiento ligeramente mejor en términos de recall para la clase positiva, en comparación con el modelo de regresión logística. Sin embargo, esto se logra a costa de una peores puntuaciones de precision y recall para las demás categorías. Por lo tanto, no podemos concluir que este tipo de modelo tenga un mejor desempeño que el anterior. De hecho, quizás de forma sorprendente, el modelo de Random Forest obtiene puntuaciones F1 ligeramente peores que el modelo de regresión logística.
+
+```{r, echo=FALSE}
+# Ahora entrenando un modelo final de Random Forest con todo el conjunto de datos de entrenamiento
+#rf_final_model = Pipeline(steps=[
+#    ('rf_preprocessor', rf_preprocessor),
+#    ('rf_classifier_final', RandomForestClassifier(class_weight=custom_weights, random_state=42))
+#])
+
+#rf_final_model.set_params(rf_classifier_final__max_depth=10, rf_classifier_final__min_samples_leaf=4,
+#                          rf_classifier_final__min_samples_split=2, rf_classifier_final__n_estimators=100)
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 19.04.02.png){width="511"}
+
+```{r, echo=FALSE}
+# Ajustar (fit) con todos los datos de entrenamiento
+#rf_final_model.fit(X_train, y_train)
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 19.05.46.png){width="499"}
+
+Al igual que con el modelo de regresión logística, ahora entrenamos un modelo final utilizando todo el conjunto de datos de entrenamiento con los hiperparámetros óptimos. Una vez más, obtenemos exactamente los mismos resultados al entrenar con el conjunto completo de datos que durante la validación cruzada.
+
+```{r, echo=FALSE}
+# Evaluación final en el conjunto de prueba reservado
+#y_pred = rf_final_model.predict(X_test)
+
+#print("\nInforme de clasificación en el conjunto de prueba:")
+#print(classification_report(y_test, y_pred, digits=4))
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 19.07.18.png){width="302"}
+
+```{r, echo=FALSE}
+# Imprimir la importancia de las características
+#rf_final_model.named_steps['rf_classifier_final'].feature_importances_
+```
+
+```{r, echo=FALSE}
+# Recuperar los nombres originales de las características para asignarlos correctamente a su importancia correspondiente
+
+# Obtener el preprocesador y el clasificador ajustados
+#rf_fitted_preprocessor = rf_final_model.named_steps['rf_preprocessor']
+#rf_fitted_classifier = rf_final_model.named_steps['rf_classifier_final']
+
+# Obtener los nombres de las características desde el preprocesador
+#def get_feature_names(preprocessor):
+#    feature_names = []
+
+#    for name, transformer, cols in preprocessor.transformers_:
+#        if name == 'nominal':
+#            # OneHotEncoder
+#            ohe = transformer.named_steps['nominal_enc']
+#            ohe_features = ohe.get_feature_names_out(cols)
+#            feature_names.extend(ohe_features)
+#        elif name == 'ordinal':
+#            feature_names.extend(cols)
+#        elif name == 'binary':
+#            feature_names.extend(cols)
+#        elif name == 'non-skewed':
+#            feature_names.extend(cols)
+#        elif name == 'skewed':
+#            feature_names.extend(cols)
+
+#    return feature_names
+
+# Obtener los nombres de las características después del preprocesamiento
+#feature_names = get_feature_names(rf_fitted_preprocessor)
+
+# Obtener importancias
+#importances = rf_fitted_classifier.feature_importances_
+
+# Combinar en un DataFrame y ordenar
+#importance_df = pd.DataFrame({
+#    'Feature': feature_names,
+#    'Importance': importances
+#}).sort_values(by='Importance', ascending=False)
+
+# Imprimir el DataFrame
+#print(importance_df.reset_index(drop=True))
+
+# Graficar la importancia de las características
+#plt.figure(figsize=(10, 6))
+#plt.barh(importance_df['Feature'][:][::-1], importance_df['Importance'][:][::-1])
+#plt.xlabel('Feature Importance')
+#plt.title('Feature Importances from Random Forest')
+#plt.tight_layout()
+#plt.show()
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 19.11.22.png){width="364"}
+
+![](images/Captura de pantalla 2025-06-30 a las 19.11.55.png){width="646"}
+
+Una desventaja del modelo Random Forest frente a la regresión logística es su menor interpretabilidad. En regresión logística, los coeficientes indican cómo cada variable afecta las (log-)probabilidades de recurrencia, lo cual no es posible con Random Forest.
+
+Sin embargo, sí podemos medir la importancia de cada característica según su contribución a reducir la impureza del modelo durante el entrenamiento, promediada en todos los árboles. Esto indica qué variables ayudaron más a mejorar la precisión de las predicciones, pero no refleja relaciones causales.
+
+Por ejemplo, ‘Daily_Steps’ fue la característica más importante para reducir la impureza, mientras que ‘Cancer_Type_4’ fue la menos importante. Curiosamente, ‘Cancer_Type_4’ tenía un efecto causal fuerte en la regresión logística, pero en Random Forest ‘Daily_Steps’ fue 28 veces más relevante para el modelo. Esto muestra que la importancia en Random Forest no implica causalidad ni la dirección del efecto.
+
+En conclusión, Random Forest no permite interpretar relaciones causales ni su sentido, y una alta importancia no garantiza que una variable sea esencial, ya que incluso variables menos importantes pueden mejorar la generalización del modelo.
+
+## XGBoost
+
+XGBoost es un método de gradient boosting que, a diferencia del Random Forest (que usa bagging y árboles profundos entrenados en paralelo), entrena árboles secuencialmente para corregir errores previos, generando árboles más superficiales para reducir sesgo. Usa descenso por gradiente para minimizar la pérdida, ajustando cada nuevo árbol a las correcciones necesarias.
+
+Es una implementación optimizada que incluye regularización (L1 y L2), paralelización y mejoras de sistema, lo que permite un entrenamiento eficiente pese a su complejidad y muchos hiperparámetros.
+
+XGBoost suele superar a Random Forest, especialmente en datos desbalanceados, pues se enfoca en corregir errores difíciles.
+
+Entre los hiperparámetros clave están:
+
+-   **n_estimators:** número de árboles
+
+-   **max_depth:** profundidad máxima de cada árbol
+
+-   **learning_rate:** tasa de aprendizaje, que balancea cantidad de árboles y generalización
+
+-   **subsample:** fracción de filas usadas por árbol para evitar sobreajuste
+
+-   **colsample_bytree:** proporción de características usadas por árbol
+
+-   **gamma:** controla la complejidad mínima para dividir un nodo
+
+-   **reg_alpha** y **reg_lambda:** intensidad de regularización L1 y L2
+
+```{r, echo=FALSE}
+# Ordinal pipeline -> OrdinalEncoder
+#xgb_ordinal_pipeline = Pipeline([
+#    ('ordinal_enc', OrdinalEncoder(categories=ordinal_categories))
+#])
+
+# Nominal pipeline -> OneHotEncoder
+#xgb_nominal_pipeline = Pipeline([
+#    ('nominal_enc', OneHotEncoder(drop='first', handle_unknown='ignore'))
+#])
+```
+
+```{r, echo=FALSE}
+# Definir el preprocesador para todas las columnas a la vez -> no se necesita preprocesamiento para las columnas binarias
+
+#xgb_preprocessor = ColumnTransformer(transformers=[
+#    ('ordinal', xgb_ordinal_pipeline, ordinal_cols),
+#    ('nominal', xgb_nominal_pipeline, nominal_cols),
+#    ('binary', 'passthrough', binary_cols),
+#    ('skewed', 'passthrough', numeric_skewed_cols),
+#    ('non-skewed', 'passthrough', numeric_nonskewed_cols)
+#])
+```
+
+```{r, echo=FALSE}
+# modelo XGBoost
+#from collections import Counter
+
+#counter = Counter(y_train)
+#neg, pos = counter[0], counter[1]
+#pos_weight = neg / pos
+
+#xgb_pipeline = Pipeline([
+#    ('xgb_preprocessor', xgb_preprocessor),
+#    ('xgb_classifier', XGBClassifier(scale_pos_weight=pos_weight, eval_metric='aucpr', random_state=42))
+#])
+```
+
+```{r, echo=FALSE}
+# Cuadrícula de hiperparámetros para ajuste (tuning)
+#xgb_param_grid = {
+#    'xgb_classifier__n_estimators': [100, 300, 500],
+#    'xgb_classifier__max_depth': [3, 5, 7],
+#    'xgb_classifier__learning_rate': [0.01, 0.05, 0.1],
+#    'xgb_classifier__subsample': [0.6, 0.8, 1.0],
+#    'xgb_classifier__colsample_bytree': [0.6, 0.8, 1.0],
+#    'xgb_classifier__gamma': [0, 1, 5],
+#    'xgb_classifier__reg_alpha': [0, 0.5, 1],
+#    'xgb_classifier__reg_lambda': [1, 2, 5],
+#}
+```
+
+```{r, echo=FALSE}
+# StratifiedKfold + GridSearch
+#cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+#xgb_grid_search = GridSearchCV(xgb_pipeline, param_grid=xgb_param_grid,
+#                           scoring='recall', cv=cv,
+#                           n_jobs=-1, verbose=1)
+```
+
+```{r, echo=FALSE}
+# Fase de entranamiento
+# !! Ten cuidado, ejecutar este fragmento de código lleva al menos 11 horas (probablemente mucho más cuando se ejecuta en Colab)!
+#with tqdm(total=1, desc="Training GridSearchCV") as pbar:
+#    xgb_grid_search.fit(X_train, y_train)
+#    pbar.update(1)
+```
+
+```{r, echo=FALSE}
+# -> Puedes simplemente ejecutar este fragmento de código para cargar el mejor modelo que obtuve después de la búsqueda en cuadrícula
+#xgb_grid_search = joblib.load("xgb_gridsearch_results.pkl")
+```
+
+```{r, echo=FALSE}
+#print("Mejores parámetros:", xgb_grid_search.best_params_)
+#print("Mejor puntuación de recall en la validación cruzada (CV):", xgb_grid_search.best_score_)
+```
+
+![](images/clipboard-1290645994.png){width="920"}
+
+```{r, echo=FALSE}
+# Evaluación final en el conjunto de prueba reservado con los mejores parámetros
+#y_pred = xgb_grid_search.predict(X_test)
+#print("\nInforme de clasificación en el conjunto de prueba:")
+#print(classification_report(y_test, y_pred, digits=4))
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 21.15.54.png){width="502"}
+
+Debido a la gran cantidad de hiperparámetros y la validación cruzada de 5 pliegues, entrenamos 32,805 modelos, más de 60 veces que con Random Forest, pero el tiempo de entrenamiento solo aumentó 8 veces, mostrando la eficiencia de XGBoost.
+
+El modelo óptimo usa todas las características y datos, sin indicios de sobreajuste, gracias a la fuerte regularización L1 y L2 y una tasa de aprendizaje baja que mejora la generalización. Además, el número y la profundidad de los árboles son mínimos, y gamma está maximizado, indicando que pocos árboles superficiales bastan para captar la complejidad.
+
+Aunque el recall en validación cruzada fue 0.5390, al evaluar en todo el conjunto bajó a 0.4397. Sin embargo, precision y recall generales mejoraron respecto a modelos anteriores. Por eso, ajustaremos ligeramente el peso de la clase positiva en el modelo final para lograr un recall comparable y una comparación justa.
+
+```{r, echo=FALSE}
+# Ahora entrenando un modelo final de XGBoost con el conjunto completo de entrenamiento
+#xgb_final_model = Pipeline(steps=[
+#    ('preprocessor', xgb_preprocessor),
+#    ('xgb_classifier_final', XGBClassifier(scale_pos_weight=pos_weight*1.002, eval_metric='aucpr', random_state=42))
+#])
+
+#xgb_final_model.set_params(xgb_classifier_final__colsample_bytree=1.0, xgb_classifier_final__gamma=5,
+#                           xgb_classifier_final__learning_rate=0.01, xgb_classifier_final__max_depth=3,
+#                           xgb_classifier_final__n_estimators=100, xgb_classifier_final__reg_alpha=1,
+#                           xgb_classifier_final__reg_lambda=5, xgb_classifier_final__subsample=1.0)
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 21.17.58.png){width="526"}
+
+```{r, echo=FALSE}
+# Ajustar (fit) con todos los datos de entrenamiento
+#xgb_final_model.fit(X_train, y_train)
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 21.19.24.png){width="520"}
+
+```{r, echo=FALSE}
+# Evaluating the model on the held-out test set
+#y_pred = xgb_final_model.predict(X_test)
+
+#print("\nInforme de clasificación en el conjunto de prueba")
+#print(classification_report(y_test, y_pred, digits=4))
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 21.21.10.png){width="448"}
+
+Después de aplicar un aumento mínimo al peso de la clase positiva en el entrenamiento (solo un factor de 1,002), logramos nuestro mejor puntaje de recall para la clase positiva hasta ahora, mientras que las demás métricas de precision y recall siguen siendo superiores a las obtenidas con nuestros modelos de regresión logística y Random Forest. Esto demuestra la mejora (aunque marginal) en el desempeño que un algoritmo altamente optimizado y especializado como XGBoost puede ofrecer.
+
+```{r, echo=FALSE}
+# Extraer el preprocesador ajustado y el clasificador entrenado
+#preprocessor = xgb_final_model.named_steps['preprocessor']
+#classifier = xgb_final_model.named_steps['xgb_classifier_final']
+
+# Obtener los nombres de las características transformadas
+#feature_names = preprocessor.get_feature_names_out()
+
+# Obtener las importancias de las características del modelo XGBoost entrenado
+#importances = classifier.feature_importances_
+
+# Combinar en un dataframe y ordenar
+#feat_imp_df = pd.DataFrame({
+#    'Característica': feature_names,
+#    'Importancia': importances
+#}).sort_values(by='Importancia', ascending=False)
+
+# Imprimir el dataframe de las importancias de las características
+#print(feat_imp_df)
+
+# Graficar las importancias de las características
+#plt.figure(figsize=(10, 6))
+#sns.barplot(x='Importancia', y='Característica', data=feat_imp_df)
+#plt.title('Importancias de las características - XGBoost modelo final')
+#plt.tight_layout()
+#plt.show()
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 21.23.38.png){width="416"}
+
+![](images/Captura de pantalla 2025-06-30 a las 21.23.53.png){width="594"}
+
+Al igual que con Random Forest, podemos analizar las importancias de las características en XGBoost, pero su interpretación es más compleja. Esto se debe a que XGBoost construye árboles secuencialmente para corregir errores previos, creando interacciones complejas entre características. Así, una característica puede ser importante solo en combinación con otras, dificultando evaluar su relevancia individual.
+
+A pesar de esto, encontramos similitudes con Random Forest en cuanto a las características poco importantes, muchas de las cuales XGBoost también identificó con importancia cero, gracias a su regularización fuerte y árboles poco profundos que limitan el uso de variables irrelevantes.
+
+La mayoría de estas características poco relevantes son variables binarias o codificadas en one-hot, que generalmente aportan poca información útil. Por ello, podríamos excluirlas para acelerar el entrenamiento sin afectar a otros modelos donde podrían ser útiles.
+
+## Red Neuronal
+
+Implementamos una red neuronal personalizada, un modelo inspirado en el cerebro humano, capaz de captar patrones complejos y relaciones no lineales entre las variables. Nuestra red feedforward consta de una capa de entrada, varias capas ocultas con funciones de activación ReLU, y una capa de salida con activación sigmoide para producir probabilidades en la clasificación binaria.
+
+Durante el entrenamiento, los datos se propagan hacia adelante para generar predicciones, y luego se calcula el error que se retropropaga para ajustar los pesos mediante optimización iterativa, minimizando la función de pérdida.
+
+Las redes neuronales son muy flexibles y potentes, pero requieren mayor capacidad computacional y ajuste cuidadoso de hiperparámetros. Además, su interpretabilidad es limitada, ya que los pesos aprendidos no se traducen fácilmente en la importancia de las variables, a diferencia de modelos más simples como la regresión logística.
+
+```{r, echo=FALSE}
+# Ordinal pipeline -> OrdinalEncoder + StandardScaler
+#nn_ordinal_pipeline = Pipeline([
+#        ('ordinal_enc', OrdinalEncoder(categories=ordinal_categories)),
+#        ('scaler', StandardScaler())
+#])
+
+# Nominal pipeline -> OneHotEncoder
+#nn_nominal_pipeline = Pipeline([
+#        ('nominal_enc', OneHotEncoder(drop='first', handle_unknown='ignore'))
+#])
+
+
+# Numeric_skewed pipeline -> PowerTransformer + StandardScaler
+# La corrección de asimetría (skew) no es estrictamente necesaria en redes neuronales como podría serlo en modelos lineales,
+# pero puede hacer que el entrenamiento sea más estable, rápido y, en última instancia, más eficaz.
+#nn_skewed_pipeline = Pipeline([
+#    ('power', PowerTransformer(method='yeo-johnson', standardize=False)),
+#    ('scaler', StandardScaler())
+#])
+
+# Numeric non-skewed pipeline -> StandardScaler
+#nn_nonskewed_pipeline = Pipeline([
+#    ('scale', StandardScaler())
+#])
+```
+
+```{r, echo=FALSE}
+# Definir el preprocesador para todas las columnas a la vez -> no se necesita preprocesamiento para las columnas binarias
+
+#nn_preprocessor = ColumnTransformer(transformers=[
+#    ('ordinal', nn_ordinal_pipeline, ordinal_cols),
+#    ('binary', 'passthrough', binary_cols),
+#    ('skewed', nn_skewed_pipeline, numeric_skewed_cols),
+#    ('non-skewed', nn_nonskewed_pipeline, numeric_nonskewed_cols)
+#])
+```
+
+```{r, echo=FALSE}
+# Establecer input_dim globalmente
+#X_preprocessed = nn_preprocessor.fit_transform(X_train)
+#input_dim = X_preprocessed.shape[1]
+```
+
+Dado el tamaño pequeño y la baja complejidad de nuestro conjunto de datos, construimos una red simple de tres capas, ajustando hiperparámetros como el número de neuronas en las capas ocultas (64 o 128 en la primera, 64 o 32 en la segunda). Ambas capas usan activación ReLU, regularización L2, normalización por lotes y Dropout.
+
+La normalización por lotes estandariza las activaciones para acelerar el entrenamiento y reducir la sensibilidad a la inicialización, mientras que Dropout previene el sobreajuste al “eliminar” neuronas aleatoriamente durante el entrenamiento, fomentando la generalización.
+
+La capa de salida tiene una neurona con activación sigmoide para producir una probabilidad de clase positiva. Usamos el optimizador Adam para una rápida convergencia y la entropía cruzada binaria como función de pérdida para penalizar predicciones erróneas con alta confianza.
+
+```{r, echo=FALSE}
+# Construir red neuronal
+#def create_model(learning_rate=0.001, dropout_rate=0.3, num_neurons_1=64, num_neurons_2=32, l2_lambda=0.01):
+#    model = Sequential()
+#    model.add(Dense(units=num_neurons_1, activation='relu', kernel_regularizer=regularizers.l2(l2_lambda)))
+#    model.add(BatchNormalization())
+#    model.add(Dropout(dropout_rate))
+#    model.add(Dense(units=num_neurons_2, activation='relu', kernel_regularizer=regularizers.l2(l2_lambda)))
+#    model.add(BatchNormalization())
+#    model.add(Dropout(dropout_rate))
+#    model.add(Dense(1, activation='sigmoid'))
+
+#   model.compile(
+#        optimizer=Adam(learning_rate=learning_rate),
+#        loss='binary_crossentropy',
+#        metrics=['Recall']
+#    )
+#    return model
+```
+
+```{r, echo=FALSE}
+# Envuélvelo en un KerasClassifier
+#keras_clf = KerasClassifier(
+#    batch_size=32,
+#    verbose=0
+#)
+```
+
+```{r, echo=FALSE}
+# Crear el pipeline
+#nn_pipeline = Pipeline(steps=[
+#    ('nn_preprocessor', nn_preprocessor),
+#    ('nn_classifier', keras_clf)
+#])
+```
+
+```{r, echo=FALSE}
+# Calcula los pesos de clase
+#class_weights = compute_class_weight(class_weight="balanced", classes=np.unique(y_train), y=y_train)
+#class_weight_dict = dict(enumerate(class_weights))
+```
+
+Además del número de neuronas, ajustamos la tasa de dropout (hasta 50%), la tasa de aprendizaje, la intensidad de regularización L2 (incluyendo la opción de eliminarla) y el número de épocas de entrenamiento.
+
+La tasa de aprendizaje controla el tamaño de los pasos del optimizador, afectando la velocidad y estabilidad del entrenamiento. El número de épocas define cuántas veces se procesa todo el conjunto de datos; pocas épocas pueden subentrenar y muchas pueden causar sobreajuste.
+
+Usamos mini-lotes de tamaño 32 para equilibrar velocidad y generalización.
+
+En total, evaluamos 216 combinaciones de hiperparámetros, entrenando 1080 modelos con validación cruzada de 5 pliegues.
+
+```{r, echo=FALSE}
+# Cuadrícula de hiperparámetros para ajuste (tuning)
+#nn_param_grid = {
+#    "nn_classifier__model__num_neurons_1": [64, 128],
+#    "nn_classifier__model__num_neurons_2": [32, 64],
+#    "nn_classifier__model__dropout_rate": [0.2, 0.4, 0.5],
+#    "nn_classifier__model__learning_rate": [1e-4, 5e-5, 1e-5],
+#    "nn_classifier__model__l2_lambda": [0.0, 0.001, 0.01],
+#    "nn_classifier__epochs": [20, 40]
+#}
+```
+
+```{r, echo=FALSE}
+# Cross-validation + GridSearch
+#skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+#nn_grid_search = GridSearchCV(
+#    estimator=nn_pipeline,
+#    param_grid=nn_param_grid,
+#    scoring="recall",
+#    cv=skf,
+#    n_jobs=-1,
+#    verbose=1
+#)
+```
+
+```{r, echo=FALSE}
+# Ajuste (fit) GridSearchCV
+## !! Ten cuidado, ejecutar este fragmento de código lleva al menos 9 horas (probablemente mucho más cuando se ejecuta en Colab)!
+#with tqdm(total=1, desc="Training GridSearchCV") as pbar:
+#    nn_grid_search.fit(X_train, np.array(y_train), nn_classifier__class_weight=class_weight_dict)
+#    pbar.update(10)
+```
+
+```{r, echo=FALSE}
+# -> Puedes simplemente ejecutar este fragmento de código para cargar el mejor modelo que obtuve después de la búsqueda en cuadrícula
+#nn_grid_search = joblib.load("nn_gridsearch_results.pkl")
+```
+
+```{r, echo=FALSE}
+#print("Mejores parámetros:", nn_grid_search.best_params_)
+#print("Mejor puntuación de recall en la validación cruzada (CV):", nn_grid_search.best_score_)
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 21.35.16.png){width="892"}
+
+```{r, echo=FALSE}
+# Evaluación final en el conjunto de prueba reservado con los mejores parámetros
+#y_pred = nn_grid_search.predict(X_test)
+#print("\nClassification Report (Test Set):")
+#print(classification_report(y_test, y_pred, digits=4))
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 21.36.36.png){width="491"}
+
+Aunque entrenamos más de 30 veces menos modelos de redes neuronales que de XGBoost, el tiempo total de entrenamiento fue similar debido a su alta complejidad. Detectamos que las redes sufrían “colapso de modo”, prediciendo siempre la clase mayoritaria por el fuerte desequilibrio de etiquetas. Por eso, reducimos la tasa de aprendizaje para estabilizar el entrenamiento.
+
+La búsqueda óptima indicó una tasa de aprendizaje muy baja (1e-5), una red con 64 neuronas en cada capa oculta y un dropout alto (0,5). La regularización L2 no fue necesaria, ya que el dropout fue suficiente. Con estos hiperparámetros, entrenamos el modelo final con todo el conjunto.
+
+```{r, echo=FALSE}
+# Define el clasificador para el modelo final
+#final_keras_clf = KerasClassifier(
+#    model=create_model(learning_rate=1e-5, dropout_rate=0.5, num_neurons_1=64, num_neurons_2=64, l2_lambda=0.0),
+#    batch_size=32,
+#    verbose=0
+#)
+```
+
+```{r, echo=FALSE}
+# Ahora entrenando un modelo final de red neuronal con el conjunto completo de datos de entrenamiento
+#nn_final_model = Pipeline(steps=[
+#    ('nn_preprocessor', nn_preprocessor),
+#    ('nn_classifier_final', final_keras_clf)
+#])
+
+#nn_final_model.set_params(nn_classifier_final__epochs=40)
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 21.39.13.png){width="514"}
+
+```{r, echo=FALSE}
+#manual_weights_dict = {
+#    0: class_weights[0],
+#    1: class_weights[1]*0.97
+#}
+```
+
+```{r, echo=FALSE}
+# Entrenar el modelo con todo el conjunto de datos de entrenamiento
+# nn_final_model.fit(X_train, np.array(y_train), nn_classifier_final__class_weight=manual_weights_dict)
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 21.41.02.png){width="722"}
+
+```{r, echo=FALSE}
+# Evaluación final en el conjunto de prueba reservado
+#y_pred = nn_final_model.predict(X_test)
+
+#print("\nClassification Report (Test Set):")
+#print(classification_report(y_test, y_pred, digits=4))
+```
+
+![](images/Captura de pantalla 2025-06-30 a las 21.43.15.png){width="395"}
+
+Tras ajustar los pesos de clase, la red neuronal supera a regresión logística y Random Forest, pero rinde un poco menos que XGBoost, con menor precisión y recall. Aunque las redes son potentes, suelen funcionar peor con datos tabulares mixtos que los modelos de árboles.
+
+Además, las redes son sensibles a irregularidades en los datos y requieren búsquedas de hiperparámetros más exhaustivas debido a su entrenamiento lento. También manejan peor el desequilibrio de clases y necesitan más datos para generalizar bien.
+
+## Resultados modelo predictivo
+
+En este capítulo, diseñamos y ajustamos cuidadosamente cuatro tipos diferentes de modelos de aprendizaje automático de última generación para predecir la recurrencia del cáncer de tiroides en los pacientes de nuestro conjunto de datos. Comenzamos con una regresión logística simple y modelos de Random Forest para que sirvieran como línea de base, antes de pasar a un algoritmo basado en árboles más optimizado y potente conocido como XGBoost, y finalmente un modelo de red neuronal feedforward personalizado. De estos cuatro modelos, obtuvimos el mejor rendimiento (basado principalmente en la puntuación de recall obtenida en la clase positiva) con el modelo XGBoost, seguido de la red neuronal, aunque para esta última, se observó que el entrenamiento era bastante inestable, lo que resultó en resultados variables en entrenamientos posteriores.
+
+Sin embargo, para los cuatro modelos, las puntuaciones obtenidas se considerarían "malas" y completamente inutilizables en un entorno clínico real, obteniendo puntuaciones de recall de alrededor del 50%. Esto podría atribuirse a la naturaleza del conjunto de datos, dado que solo se incluyó un número limitado de mediciones y ninguna de nuestras características se correlacionó significativamente con nuestra variable objetivo. Por otro lado, la recurrencia del cáncer es un proceso muy complejo que depende de una amplia gama de factores. Para hacer predicciones más precisas basadas en datos tabulares, se requeriría un conjunto de características mucho más complejo.
+
+Finalmente, podríamos obtener mejores resultados utilizando tipos de modelos más especializados. Decidimos de antemano incluir solo datos de la última visita de cada paciente, ya que argumentamos que estos serían los más informativos para predecir la recurrencia. Sin embargo, lo más probable es que sea óptimo incluir datos de cada visita, lo que podría hacerse de varias maneras, como agregando todos los datos de las diferentes visitas (lo que aún conlleva una pérdida de información) o empleando redes neuronales basadas en series de tiempo, como las redes LSTM (Long Short-Term Memory) o RNN (Recurrent Neural Networks), que son capaces de procesar múltiples entradas de diferentes puntos de "tiempo".
+
+# Conclusión
+
+En cuanto al modelo exploratorio, el historial familiar se encuentra más frecuente en el dataset, en línea con su clasificación teórica de factor de riesgo. Además, el riesgo de recidiva no se ve determinado por ninguna de las siguientes variables: número de visita, tipo de escáner, sexo, historial familiar, tabaco, exposición a radiación, presencia de calcificación, indicador de invasión capsular, riesgo de TSH, adherencia a la medicación, diagnóstico, tipo de cáncer. Por último, se concluye que ninguno de las siguientes hormonas/moléculas funcionaría como biomarcador para determinar la reducción o aumento del tamñao del tumor: TPOAb, Thyroglobulin, Calcitonin, Reverse_T3_Index.
+
+En cuanto al modelo predictivo, para los cuatro modelos las puntuaciones obtenidas se considerarían insuficientes y completamente inutilizables en un entorno clínico real, con puntuaciones de recall de alrededor del 50%.
+
+# Bibliografía
+
+1.  Cabanillas ME, McFadden DG, Durante C. Thyroid cancer. Lancet. 2016;388:2783-2795.
+
+2.  [https://seer.cancer.gov/statfacts/html/thyro.html](https://www.google.com/url?q=https%3A%2F%2Fseer.cancer.gov%2Fstatfacts%2Fhtml%2Fthyro.html)
+
+3.  [https://www.cancer.org/cancer/types/thyroid-cancer/causes-risks-prevention/risk-factors.html](https://www.google.com/url?q=https%3A%2F%2Fwww.cancer.org%2Fcancer%2Ftypes%2Fthyroid-cancer%2Fcauses-risks-prevention%2Frisk-factors.html)
+
+4.  Matrone Antonio.EXPERT REVIEW OF ENDOCRINOLOGY & METABOLISM. 2022, VOL. 17, NO. 6, 463–466
+
+5.  Wang Z, Lin Y, Jiang Y, Fu R, Wang Y and Zhang Q. Front. Endocrinol 13:992566.2022 Dec 7;13:992566
+
+6.  Li S, Ren C, Gong Y, Ye F, Tang Y, Xu J, Guo C and Huang J.Front. Endocrinol. 20222; 13:872527
+
+7.  Sparano C, Adornato V, Puccioni M, Zago E, Perigli G, Badii B, Santoro R, Maggi M and Petrone L. Front. Oncol. 2023; 13:1120799
+
+# Anexo
+
+Añado enlade de un github, con todo el código empleado para este trabajo.
